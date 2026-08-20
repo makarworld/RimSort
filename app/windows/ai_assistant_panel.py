@@ -1,3 +1,5 @@
+import html
+import re
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QTextEdit,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -30,15 +32,19 @@ from app.ai.tools import mod_context
 from app.ai.tools.mod_tools import (
     GEMINI_MOD_TOOL_DECLARATIONS,
     ModToolExecutor,
+    extract_mod_links,
     summarize_tool_result,
 )
 from app.controllers.metadata_controller import MetadataController
 from app.models.settings import Settings
 from app.utils.app_info import AppInfo
+from app.utils.steam.workshop_validate import validate_publishedfileids
+
+_WORKSHOP_ID_PATTERN = re.compile(r"\b\d{6,10}\b")
 
 
 class _CompletionWorker(QThread):
-    finished_ok = Signal(str)
+    finished_ok = Signal(str, dict, list)
     finished_error = Signal(str)
     tool_trace = Signal(str)
     progress = Signal(int, int, str)
@@ -53,14 +59,34 @@ class _CompletionWorker(QThread):
         self._provider = provider
         self._messages = messages
         self._steam_apikey_override = steam_apikey_override
+        self._known_links: dict[str, str] = {}
 
     def _on_tool_call(
         self, name: str, args: dict[str, Any], result: dict[str, Any]
     ) -> None:
         self.tool_trace.emit(_format_tool_trace(name, args, result))
+        self._known_links.update(extract_mod_links(name, result))
 
     def _on_progress(self, current: int, total: int, message: str) -> None:
         self.progress.emit(current, total, message)
+
+    def _finalize_mod_links(self, text: str) -> tuple[dict[str, str], list[str]]:
+        """Linkify only IDs backed by a tool result; validate any other IDs the
+        model mentioned in prose so hallucinated ones can be flagged, not linked."""
+        mod_links = dict(self._known_links)
+        candidates = {
+            m for m in _WORKSHOP_ID_PATTERN.findall(text) if m not in mod_links
+        }
+        if not candidates:
+            return mod_links, []
+        validation = validate_publishedfileids(sorted(candidates))
+        for detail in validation.get("valid_details", []) or []:
+            pfid = str(detail.get("publishedfileid", "")).strip()
+            url = str(detail.get("url", "")).strip()
+            if pfid and url:
+                mod_links[pfid] = url
+        invalid_ids = [str(i) for i in validation.get("invalid", []) or []]
+        return mod_links, invalid_ids
 
     def run(self) -> None:
         tool_executor = ModToolExecutor(
@@ -74,7 +100,8 @@ class _CompletionWorker(QThread):
                 tool_executor=tool_executor,
                 on_tool_call=self._on_tool_call,
             )
-            self.finished_ok.emit(text)
+            mod_links, invalid_ids = self._finalize_mod_links(text)
+            self.finished_ok.emit(text, mod_links, invalid_ids)
         except Exception as exc:  # noqa: BLE001
             self.finished_error.emit(str(exc))
 
@@ -179,8 +206,9 @@ class AiAssistantPanel(QDialog):
         proxy_row.addWidget(self.proxy_edit)
         layout.addLayout(proxy_row)
 
-        self.history = QTextEdit()
+        self.history = QTextBrowser()
         self.history.setReadOnly(True)
+        self.history.setOpenExternalLinks(True)
         layout.addWidget(self.history)
 
         self.progress_bar = QProgressBar()
@@ -205,21 +233,67 @@ class AiAssistantPanel(QDialog):
             return self.tr("Assistant")
         return self.tr("User")
 
-    def _format_message_line(self, msg: dict[str, str]) -> str:
+    def _linkify(
+        self, text: str, mod_links: dict[str, str], invalid_ids: list[str]
+    ) -> str:
+        invalid_set = set(invalid_ids)
+        out: list[str] = []
+        last = 0
+        for m in _WORKSHOP_ID_PATTERN.finditer(text):
+            out.append(html.escape(text[last : m.start()]))
+            token = m.group(0)
+            if token in mod_links:
+                url = html.escape(mod_links[token], quote=True)
+                out.append(f'<a href="{url}">{html.escape(token)}</a>')
+            elif token in invalid_set:
+                title = html.escape(
+                    self.tr("Unverified/non-existent Workshop ID"), quote=True
+                )
+                out.append(
+                    f'<span style="color:#c0392b" title="{title}">'
+                    f"{html.escape(token)} ⚠</span>"
+                )
+            else:
+                out.append(html.escape(token))
+            last = m.end()
+        out.append(html.escape(text[last:]))
+        return "".join(out)
+
+    def _format_message_line(self, msg: dict[str, Any]) -> str:
         timestamp = msg.get("timestamp", "")
         prefix = f"[{timestamp}] " if timestamp else ""
-        return f"{prefix}{self._role_label(msg['role'])}: {msg['content']}"
+        header = html.escape(f"{prefix}{self._role_label(msg['role'])}: ")
+        content = self._linkify(
+            str(msg["content"]),
+            msg.get("mod_links") or {},
+            msg.get("invalid_ids") or [],
+        )
+        return f"{header}{content}"
 
-    def _render_history(self, *, loading_text: str | None = None) -> None:
+    def _render_history(
+        self, *, loading_text: str | None = None, error_text: str | None = None
+    ) -> None:
         parts: list[str] = []
         for msg in self._store.as_list():
+            if msg.get("role") == "assistant":
+                for trace in msg.get("tool_trace") or []:
+                    parts.append(
+                        html.escape(self.tr("Tool: {call}").format(call=trace))
+                    )
             parts.append(self._format_message_line(msg))
-            parts.append(self._MESSAGE_SEPARATOR)
-        for trace in self._tool_traces:
-            parts.append(self.tr("Tool: {call}").format(call=trace))
+            parts.append(html.escape(self._MESSAGE_SEPARATOR))
         if loading_text:
-            parts.append(loading_text)
-        self.history.setPlainText("\n\n".join(parts))
+            for trace in self._tool_traces:
+                parts.append(html.escape(self.tr("Tool: {call}").format(call=trace)))
+            parts.append(html.escape(loading_text))
+        if error_text:
+            parts.append(html.escape(error_text))
+            parts.append(html.escape(self._MESSAGE_SEPARATOR))
+        body = "\n\n".join(parts)
+        self.history.setHtml(
+            f'<pre style="white-space:pre-wrap; font-family:inherit; margin:0;">'
+            f"{body}</pre>"
+        )
         scrollbar = self.history.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -320,6 +394,12 @@ class AiAssistantPanel(QDialog):
         )
         steam_line = self._steam_apikey_context_line()
         return (
+            "CRITICAL: NEVER invent Steam Workshop publishedfileid values. "
+            "Only cite IDs returned by search_workshop_mods, "
+            "find_russian_localizations_for_active_mods, or validate_workshop_ids. "
+            "If you need to mention an ID that did not come from one of those tools "
+            "in this turn, call validate_workshop_ids on it first and report only "
+            "valid IDs. "
             f"You are a helpful assistant for RimSort {version}. "
             f"RimWorld version: {game_version}. Active mods: {len(active_mods)}. "
             f"{steam_line} "
@@ -327,9 +407,6 @@ class AiAssistantPanel(QDialog):
             "use queue_sort_mods, queue_save_mods, queue_download, or queue_run_game only "
             "when the user explicitly asks and RimSort GUI is running. "
             "Do not use Markdown. Reply in plain text only (no **, ##, ```, or bullet lists). "
-            "CRITICAL: NEVER invent Steam Workshop publishedfileid values. "
-            "Only cite IDs returned by search_workshop_mods, "
-            "find_russian_localizations_for_active_mods, or validate_workshop_ids. "
             "For Russian localization requests, ALWAYS call "
             "find_russian_localizations_for_active_mods first. "
             "Before showing a final localization list, verify IDs with "
@@ -338,11 +415,21 @@ class AiAssistantPanel(QDialog):
             "queue_download validates IDs automatically. "
             "NEVER claim steam_apikey is missing unless get_instance_summary or "
             "a workshop search tool returned that error. "
+            f"When calling search_workshop_mods or search_steam_workshop, ALWAYS pass "
+            f"version='{game_version}' unless the user explicitly asks for a different "
+            "RimWorld version, so results are not for the wrong game version. "
             "Tools: describe_mod, search_installed_mods, search_workshop_mods, "
             "search_steam_workshop (same as search_workshop_mods), "
             "find_russian_localizations_for_active_mods, validate_workshop_ids, "
-            "list_missing_deps, get_instance_summary, "
-            "read_log (source player or rimsort), list_active_mods, list_installed_mods.\n\n"
+            "check_mod_conflicts, list_missing_deps, get_instance_summary, "
+            "read_log (source player or rimsort), list_active_mods, list_installed_mods. "
+            "check_mod_conflicts only works for a mod that is already INSTALLED "
+            "(RimSort can only read declared incompatibilities from a downloaded mod's "
+            "About.xml). For a Workshop mod that is NOT yet installed, RimSort has no "
+            "way to verify compatibility with active mods before download — never claim "
+            "or imply a not-yet-installed mod is compatible with anything (e.g. Combat "
+            "Extended); say plainly that compatibility is unverified and tell the user "
+            "to check the mod's own Workshop page/comments before installing it.\n\n"
             f"{mods_preview}"
         )
 
@@ -361,7 +448,10 @@ class AiAssistantPanel(QDialog):
         self._start_loading()
 
         messages = [{"role": "system", "content": self._system_context()}]
-        messages.extend(self._store.as_list())
+        messages.extend(
+            {"role": str(m["role"]), "content": str(m["content"])}
+            for m in self._store.as_list()
+        )
         provider = GeminiProvider(
             self.settings.ai_api_key,
             proxy=self.settings.ai_proxy,
@@ -386,21 +476,24 @@ class AiAssistantPanel(QDialog):
         self.send_btn.setEnabled(True)
         self.clear_btn.setEnabled(True)
 
-    def _on_response(self, text: str) -> None:
-        self._store.append("assistant", text)
+    def _on_response(
+        self, text: str, mod_links: dict[str, str], invalid_ids: list[str]
+    ) -> None:
+        self._store.append(
+            "assistant",
+            text,
+            tool_trace=self._tool_traces,
+            mod_links=mod_links,
+            invalid_ids=invalid_ids,
+        )
         self._store.save()
         self._render_history()
 
     def _on_error(self, message: str) -> None:
         self._stop_loading()
-        self._render_history()
         timestamp = datetime.now().strftime("%H:%M:%S")  # noqa: DTZ005
         error_block = f"[{timestamp}] {self.tr('Error')}: {message}"
-        current = self.history.toPlainText()
-        suffix = f"\n\n{error_block}\n\n{self._MESSAGE_SEPARATOR}"
-        self.history.setPlainText(f"{current}{suffix}" if current else error_block)
-        scrollbar = self.history.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        self._render_history(error_text=error_block)
 
         if is_quota_error_message(message):
             suggestions = suggest_models_excluding(self._current_model_id())

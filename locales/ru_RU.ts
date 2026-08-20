@@ -2649,7 +2649,7 @@ Manage mods installed from GitHub releases.</source>
     </message>
     <message>
         <source>AI Assistant</source>
-        <translation type="unfinished">AI-ассистент</translation>
+        <translation>AI-ассистент</translation>
     </message>
     <message>
         <source>From Save file…</source>

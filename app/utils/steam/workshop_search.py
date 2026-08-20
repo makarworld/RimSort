@@ -41,8 +41,13 @@ def search_workshop_by_text(
     *,
     limit: int = 20,
     appid: int = RIMWORLD_APPID,
+    game_version: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search RimWorld Workshop items by title/description text."""
+    """Search RimWorld Workshop items by title/description text.
+
+    ``game_version`` (e.g. "1.6"), if given, restricts results to items
+    tagged with that RimWorld version on the Workshop.
+    """
     text = query.strip()
     if not text:
         return []
@@ -50,6 +55,9 @@ def search_workshop_by_text(
         raise ValueError("Steam Web API key is required")
 
     limit = max(1, min(int(limit), 50))
+    required_tags = (
+        [game_version.strip()] if game_version and game_version.strip() else None
+    )
     api = WebAPI(api_key.strip(), format="json", https=True)
     # jscpd:ignore-start
     response = api.call(
@@ -61,7 +69,7 @@ def search_workshop_by_text(
         numperpage=limit,
         creator_appid=appid,
         appid=appid,
-        requiredtags=None,
+        requiredtags=required_tags,
         excludedtags=None,
         match_all_tags=False,
         required_flags=None,

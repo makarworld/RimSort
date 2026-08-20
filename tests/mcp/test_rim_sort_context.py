@@ -98,6 +98,39 @@ def test_list_missing_deps(patch_app_info: None) -> None:
     assert result["missing_by_mod"]["bs.fishery"] == ["missing.dep"]
 
 
+def test_check_mod_conflicts_not_installed(patch_app_info: None) -> None:
+    result = rim_sort_context.check_mod_conflicts("not.installed.mod")
+    assert result["found"] is False
+    assert "error" in result
+
+
+def test_check_mod_conflicts_no_conflicts(patch_app_info: None) -> None:
+    result = rim_sort_context.check_mod_conflicts("bs.fishery")
+    assert result["found"] is True
+    assert result["declared_incompatibilities"] == []
+    assert result["conflicts_with_active"] == []
+
+
+def test_check_mod_conflicts_with_active_mod(
+    patch_app_info: None, mcp_instance_layout: dict[str, Any]
+) -> None:
+    conflict_mod = mcp_instance_layout["mods"] / "conflicting_mod"
+    (conflict_mod / "About").mkdir(parents=True)
+    (conflict_mod / "About" / "About.xml").write_text(
+        "<ModMetaData>"
+        "<name>Conflicting Mod</name>"
+        "<packageId>test.conflict</packageId>"
+        "<incompatibleWith><li>brrainz.harmony</li></incompatibleWith>"
+        "</ModMetaData>",
+        encoding="utf-8",
+    )
+
+    result = rim_sort_context.check_mod_conflicts("test.conflict")
+    assert result["found"] is True
+    assert result["declared_incompatibilities"] == ["brrainz.harmony"]
+    assert result["conflicts_with_active"] == ["brrainz.harmony"]
+
+
 def test_get_instance_summary(
     patch_app_info: None, mcp_instance_layout: dict[str, Any]
 ) -> None:

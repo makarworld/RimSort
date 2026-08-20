@@ -233,6 +233,41 @@ def describe_mod(
     return _parse_about_path(mod_path) if mod_path is not None else None
 
 
+def check_mod_conflicts(
+    package_id: str, instance_name: str | None = None
+) -> dict[str, Any]:
+    """Cross-check an INSTALLED mod's declared incompatibleWith against active mods.
+
+    Only works for mods already downloaded/installed, since incompatibleWith is
+    only known by reading the mod's own About.xml. Returns found=False if the
+    mod is not installed.
+    """
+    mod_path = _find_mod_path(package_id, instance_name)
+    if mod_path is None:
+        return {
+            "found": False,
+            "package_id": package_id,
+            "error": "Mod is not installed; incompatibilities cannot be checked.",
+        }
+    info = _parse_about_path(mod_path)
+    if info is None:
+        return {
+            "found": False,
+            "package_id": package_id,
+            "error": "Could not parse About.xml for this mod.",
+        }
+
+    active_lower = {pid.lower() for pid in list_active_package_ids(instance_name)}
+    declared = info.get("incompatibilities", [])
+    conflicts = [pid for pid in declared if pid.lower() in active_lower]
+    return {
+        "found": True,
+        "package_id": info["package_id"],
+        "declared_incompatibilities": declared,
+        "conflicts_with_active": conflicts,
+    }
+
+
 def search_installed_mods(
     query: str, limit: int = 20, instance_name: str | None = None
 ) -> list[dict[str, str]]:
@@ -261,6 +296,7 @@ def search_workshop_mods(
     limit: int = 20,
     instance_name: str | None = None,
     steam_apikey_override: str | None = None,
+    game_version: str | None = None,
 ) -> dict[str, Any]:
     """Search Steam Workshop by text via Web API (requires steam_apikey in settings)."""
     q = query.strip()
@@ -280,7 +316,12 @@ def search_workshop_mods(
         }
 
     try:
-        matches = search_workshop_by_text(api_key, q, limit=limit)
+        if game_version:
+            matches = search_workshop_by_text(
+                api_key, q, limit=limit, game_version=game_version
+            )
+        else:
+            matches = search_workshop_by_text(api_key, q, limit=limit)
         return {
             "query": q,
             "matches": matches,

@@ -2,8 +2,65 @@ from typing import Any
 
 import pytest
 
-from app.ai.tools.mod_tools import ModToolExecutor
+from app.ai.tools.mod_tools import ModToolExecutor, extract_mod_links
 from app.mcp.tools import call_tool
+
+
+class TestExtractModLinks:
+    def test_search_workshop_mods(self) -> None:
+        result = {
+            "matches": [
+                {
+                    "publishedfileid": "123",
+                    "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=123",
+                }
+            ]
+        }
+        links = extract_mod_links("search_workshop_mods", result)
+        assert links == {
+            "123": "https://steamcommunity.com/sharedfiles/filedetails/?id=123"
+        }
+
+    def test_validate_workshop_ids(self) -> None:
+        result = {
+            "valid_details": [
+                {
+                    "publishedfileid": "456",
+                    "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=456",
+                }
+            ]
+        }
+        assert "456" in extract_mod_links("validate_workshop_ids", result)
+
+    def test_find_russian_localizations(self) -> None:
+        result = {
+            "suggestions": [
+                {
+                    "candidates": [
+                        {
+                            "publishedfileid": "789",
+                            "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=789",
+                        }
+                    ],
+                    "recommended": {
+                        "publishedfileid": "789",
+                        "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=789",
+                    },
+                }
+            ]
+        }
+        links = extract_mod_links("find_russian_localizations_for_active_mods", result)
+        assert links["789"].endswith("id=789")
+
+    def test_queue_download_builds_url(self) -> None:
+        result = {"valid_ids": ["999"]}
+        links = extract_mod_links("queue_download", result)
+        assert (
+            links["999"] == "https://steamcommunity.com/sharedfiles/filedetails/?id=999"
+        )
+
+    def test_unrelated_tool_returns_empty(self) -> None:
+        assert extract_mod_links("list_active_mods", {"count": 1}) == {}
 
 
 class TestModToolExecutor:
@@ -57,6 +114,7 @@ class TestModToolExecutor:
             limit: int = 20,
             instance_name: str | None = None,
             steam_apikey_override: str | None = None,
+            game_version: str | None = None,
         ) -> dict[str, Any]:
             captured["override"] = steam_apikey_override
             return {"query": query, "matches": [], "count": 0, "source": "steam_api"}

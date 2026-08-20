@@ -36,3 +36,23 @@ def test_search_workshop_by_text_requires_api_key() -> None:
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_search_workshop_by_text_filters_by_game_version() -> None:
+    mock_api = MagicMock()
+    mock_api.call.return_value = {"response": {"publishedfiledetails": []}}
+
+    with patch("app.utils.steam.workshop_search.WebAPI", return_value=mock_api):
+        search_workshop_by_text("test-key", "harmony", game_version="1.6")
+
+    assert mock_api.call.call_args.kwargs["requiredtags"] == ["1.6"]
+
+
+def test_search_workshop_by_text_no_version_means_no_tag_filter() -> None:
+    mock_api = MagicMock()
+    mock_api.call.return_value = {"response": {"publishedfiledetails": []}}
+
+    with patch("app.utils.steam.workshop_search.WebAPI", return_value=mock_api):
+        search_workshop_by_text("test-key", "harmony")
+
+    assert mock_api.call.call_args.kwargs["requiredtags"] is None

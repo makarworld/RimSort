@@ -21,6 +21,23 @@ _QUERY_LIMIT_SCHEMA: dict[str, Any] = {
     "required": ["query"],
 }
 
+_WORKSHOP_SEARCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        "version": {
+            "type": "string",
+            "description": (
+                "RimWorld game version to filter by (e.g. '1.6'). Always pass "
+                "the current instance's game_version unless the user explicitly "
+                "asks for a different version."
+            ),
+        },
+    },
+    "required": ["query"],
+}
+
 
 def list_tools() -> list[dict[str, Any]]:
     return [
@@ -66,9 +83,10 @@ def list_tools() -> list[dict[str, Any]]:
                 "Search RimWorld Steam Workshop by text (title/description). "
                 "Requires steam_apikey in RimSort settings (Database Builder tab). "
                 "Does not require workshop_folder. Returns publishedfileid, title, "
-                "url, and short description. Use these IDs for queue_download."
+                "url, and short description. Use these IDs for queue_download. "
+                "Pass 'version' to filter by RimWorld game version."
             ),
-            "inputSchema": _QUERY_LIMIT_SCHEMA,
+            "inputSchema": _WORKSHOP_SEARCH_SCHEMA,
         },
         {
             "name": "search_steam_workshop",
@@ -76,7 +94,7 @@ def list_tools() -> list[dict[str, Any]]:
                 "Alias for search_workshop_mods: search RimWorld Steam Workshop "
                 "by text via Steam Web API (requires steam_apikey in settings)."
             ),
-            "inputSchema": _QUERY_LIMIT_SCHEMA,
+            "inputSchema": _WORKSHOP_SEARCH_SCHEMA,
         },
         {
             "name": "find_russian_localizations_for_active_mods",
@@ -117,6 +135,21 @@ def list_tools() -> list[dict[str, Any]]:
                     }
                 },
                 "required": ["publishedfileids"],
+            },
+        },
+        {
+            "name": "check_mod_conflicts",
+            "description": (
+                "Cross-check an INSTALLED mod's declared incompatibleWith "
+                "(About.xml) against the currently active mod list. Only works "
+                "for mods already downloaded; returns found=false otherwise. "
+                "RimSort cannot check compatibility for a Workshop mod that has "
+                "not been installed yet."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"package_id": {"type": "string"}},
+                "required": ["package_id"],
             },
         },
         {
@@ -247,10 +280,12 @@ def call_tool(
         if isinstance(parsed, dict):
             return parsed
         query, limit = parsed
+        version = str(args.get("version", "")).strip() or None
         return rim_sort_context.search_workshop_mods(
             query,
             limit=limit,
             steam_apikey_override=steam_apikey_override,
+            game_version=version,
         )
     if name == "find_russian_localizations_for_active_mods":
         limit_per_mod = _parse_limit(args.get("limit_per_mod", 5), 5, 10)
@@ -270,6 +305,11 @@ def call_tool(
             return {"valid": [], "invalid": [], "error": "publishedfileids is required"}
         cleaned = [str(p).strip() for p in pfids if str(p).strip()]
         return validate_publishedfileids(cleaned)
+    if name == "check_mod_conflicts":
+        pid = str(args.get("package_id", "")).strip()
+        if not pid:
+            return {"found": False, "error": "package_id is required"}
+        return rim_sort_context.check_mod_conflicts(pid)
     if name == "list_missing_deps":
         return rim_sort_context.list_missing_deps()
     if name == "get_instance_summary":

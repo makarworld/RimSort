@@ -162,6 +162,38 @@ def test_search_workshop_mods_tool() -> None:
     assert result["matches"][0]["publishedfileid"] == "2009463077"
 
 
+def test_search_workshop_mods_tool_passes_version() -> None:
+    with patch(
+        "app.mcp.tools.rim_sort_context.search_workshop_mods",
+        return_value={"query": "x", "matches": [], "count": 0, "source": "steam_api"},
+    ) as mock_search:
+        call_tool("search_workshop_mods", {"query": "x", "version": "1.6"})
+    mock_search.assert_called_once_with(
+        "x", limit=20, steam_apikey_override=None, game_version="1.6"
+    )
+
+
+def test_check_mod_conflicts_tool_requires_package_id() -> None:
+    result = call_tool("check_mod_conflicts", {})
+    assert result["found"] is False
+    assert "error" in result
+
+
+def test_check_mod_conflicts_tool_dispatch() -> None:
+    with patch(
+        "app.mcp.tools.rim_sort_context.check_mod_conflicts",
+        return_value={
+            "found": True,
+            "package_id": "test.mod",
+            "declared_incompatibilities": ["other.mod"],
+            "conflicts_with_active": ["other.mod"],
+        },
+    ) as mock_check:
+        result = call_tool("check_mod_conflicts", {"package_id": "test.mod"})
+    mock_check.assert_called_once_with("test.mod")
+    assert result["conflicts_with_active"] == ["other.mod"]
+
+
 def test_search_steam_workshop_alias() -> None:
     with patch(
         "app.mcp.tools.rim_sort_context.search_workshop_mods",

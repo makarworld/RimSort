@@ -7,6 +7,45 @@ GEMINI_MOD_TOOL_DECLARATIONS = gemini_tool_declarations()
 ProgressCallback = Callable[[int, int, str], None]
 
 
+def extract_mod_links(name: str, result: dict[str, Any]) -> dict[str, str]:
+    """Map publishedfileid -> Workshop URL for IDs a tool call has already verified.
+
+    Used by the chat UI to linkify only mods that came from a real tool result,
+    never IDs the model may have invented.
+    """
+    links: dict[str, str] = {}
+
+    def _add(item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        pfid = str(item.get("publishedfileid", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if pfid and url:
+            links[pfid] = url
+
+    if name in ("search_workshop_mods", "search_steam_workshop"):
+        for item in result.get("matches", []) or []:
+            _add(item)
+    elif name == "validate_workshop_ids":
+        for item in result.get("valid_details", []) or []:
+            _add(item)
+    elif name == "find_russian_localizations_for_active_mods":
+        for entry in result.get("suggestions", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            for cand in entry.get("candidates", []) or []:
+                _add(cand)
+            _add(entry.get("recommended"))
+    elif name == "queue_download":
+        for pfid in result.get("valid_ids", []) or []:
+            pfid = str(pfid).strip()
+            if pfid:
+                links[pfid] = (
+                    f"https://steamcommunity.com/sharedfiles/filedetails/?id={pfid}"
+                )
+    return links
+
+
 def summarize_tool_result(name: str, result: dict[str, Any]) -> str:
     """Short summary for tool trace UI."""
     if "error" in result and result.get("error"):
@@ -39,6 +78,11 @@ def summarize_tool_result(name: str, result: dict[str, Any]) -> str:
         )
     if name == "search_installed_mods":
         return f"{result.get('count', 0)} matches"
+    if name == "check_mod_conflicts":
+        conflicts = result.get("conflicts_with_active", [])
+        if conflicts:
+            return f"conflicts with active: {', '.join(conflicts)}"
+        return "no conflicts with active mods"
     if name == "read_log":
         return f"{result.get('line_count', 0)} lines"
     if "count" in result:
